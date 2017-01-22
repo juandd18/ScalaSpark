@@ -1,0 +1,190 @@
+package com.juandavid.sparkexample
+
+import org.apache.spark.SparkContext
+import org.apache.spark.SparkContext._
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.{SQLContext, Row, DataFrame}
+import org.apache.spark.sql.types.DateType
+import org.apache.spark.sql.functions._
+import com.databricks.spark.csv.util._
+import org.apache.spark.HashPartitioner
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.rdd.RDD
+import java.util.Calendar
+import java.util.Date
+import java.text.SimpleDateFormat
+import java.security.MessageDigest
+
+object CDCcode {
+  
+  def main(args: Array[String]) {
+     
+    
+     
+    val sparkConfiguration = new SparkConf();
+    sparkConfiguration.setMaster("local[*]");
+    sparkConfiguration.setAppName("test-spark-job");
+
+    val sc: SparkContext = new SparkContext(sparkConfiguration)
+    
+    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
+
+    // this is used to implicitly convert an RDD to a DataFrame.
+    import sqlContext.implicits._
+    
+    
+    val datefun = getDate(_,_)
+    val sqldate = udf(datefun)
+    
+    //val das_filen = "hdfs:////Colombia/landing/sanatas/20160717/Das/*"
+   val das_file = sc.textFile("/Users/juandavid/Documents/experian/datos/Maestros_completos/Das/*")
+    //val das_file = sqlContext.csvFile(carsFile8859, parserLib = parserLib, charset = "iso-8859-1", delimiter = 'þ')
+    
+    //archivo update
+    val das_file_updated = sc.textFile("/Users/juandavid/Documents/experian/datos/Maestros_completos/muestra-updateDas.txt")
+    
+    val das_file_rdd = das_file.map(line => {
+            val fields = line.split(";")
+            val severidad_cobol = fields(0).toInt
+            val ind_eliminado = fields(1)
+            val checksum = fields(2)
+            val fecha_novedad = fields(3)
+            val cod_pais_dato = fields(4)
+            val cod_fuente_dato = fields(5).toInt
+            val tipo_id = fields(6).toInt
+            val num_id = fields(7)
+            val nacionalidad = fields(8)
+            val nombre = fields(9)
+            val fecha_creacion = fields(10)
+            val fecha_modificacion = fields(11)
+            val ind_modificacion = fields(12)
+            val ind_bloqueo = fields(12) //revisar porque no trae field(13)
+            val InicioVigencia : Option[String] = Some(fields(11))
+            val FinalVigencia : Option[String] = None
+            val hash_key = md5sum(fields(6)+""+fields(7))
+            val hash_kdt = md5sum(fields(6)+""+fields(7) + " " + InicioVigencia)
+            val hash_row = md5sum(fields(6)+""+fields(7) + " " + tipo_id + " " + num_id+""+nacionalidad
+                +""+nombre+""+fecha_creacion+""+fecha_modificacion+""+ind_modificacion+""+ind_bloqueo
+                +""+InicioVigencia+""+FinalVigencia)
+            val hash_all = md5sum(fields(6)+""+fields(7) + " " + tipo_id + " " + num_id+""+nacionalidad
+                +""+nombre+""+fecha_creacion+""+fecha_modificacion+""+ind_modificacion+""+ind_bloqueo
+                +""+InicioVigencia+""+FinalVigencia)
+            new DAS(severidad_cobol, ind_eliminado, checksum, fecha_novedad, cod_pais_dato, cod_fuente_dato,
+                tipo_id,num_id,nacionalidad,nombre,fecha_creacion,fecha_modificacion,ind_modificacion,
+                ind_bloqueo,InicioVigencia,FinalVigencia,
+                         hash_key, hash_kdt, hash_row, hash_all)
+        }).map(entry => (entry.hash_Key, entry))
+        
+ 
+  
+   val das_file_updated_rdd = das_file_updated.map(line => {
+            val fields = line.split(";")
+            val severidad_cobol = fields(0).toInt
+            val ind_eliminado = fields(1)
+            val checksum = fields(2)
+            val fecha_novedad = fields(3)
+            val cod_pais_dato = fields(4)
+            val cod_fuente_dato = fields(5).toInt
+            val tipo_id = fields(6).toInt
+            val num_id = fields(7)
+            val nacionalidad = fields(8)
+            val nombre = fields(9)
+            val fecha_creacion = fields(10)
+            val fecha_modificacion = fields(11)
+            val ind_modificacion = fields(12)
+            val ind_bloqueo = fields(12)
+            val InicioVigencia : Option[String] = Some(fields(11))
+            val FinalVigencia : Option[String] = None
+            val hash_key = md5sum(fields(6)+""+fields(7))
+            val hash_kdt = md5sum(fields(6)+""+fields(7) + " " + InicioVigencia)
+            val hash_row = md5sum(fields(6)+""+fields(7) + " " + tipo_id + " " + num_id+""+nacionalidad
+                +""+nombre+""+fecha_creacion+""+fecha_modificacion+""+ind_modificacion+""+ind_bloqueo
+                +""+InicioVigencia+""+FinalVigencia)
+            val hash_all = md5sum(fields(6)+""+fields(7) + " " + tipo_id + " " + num_id+""+nacionalidad
+                +""+nombre+""+fecha_creacion+""+fecha_modificacion+""+ind_modificacion+""+ind_bloqueo
+                +""+InicioVigencia+""+FinalVigencia)
+            new DAS(severidad_cobol, ind_eliminado, checksum, fecha_novedad, cod_pais_dato, cod_fuente_dato,
+                tipo_id,num_id,nacionalidad,nombre,fecha_creacion,fecha_modificacion,ind_modificacion,
+                ind_bloqueo,InicioVigencia,FinalVigencia,
+                         hash_key, hash_kdt, hash_row, hash_all)
+        }).map(entry => (entry.hash_Key, entry))
+   
+     
+        
+    // new rows
+    val new_das = das_file_updated_rdd.subtractByKey(das_file_rdd).map(x => x._2).toDF()    
+    val das_df = das_file_rdd.map(x => x._2).toDF()
+    val das_updated_df = das_file_updated_rdd.map(x => x._2).toDF()    
+    //das_df.show(30)    
+   
+   //hash_Key equals but select changes
+   val joined = das_df.as("a").join(das_updated_df.as("b"),$"a.hash_Key" === $"b.hash_Key" ,"inner")
+   .where( $"a.hash_All" !== $"b.hash_All")
+   //joined.show(20)
+   
+   //edit InicioVigencia for edit rows
+   val joined_changes = joined
+   .select( "b.*").withColumn("InicioVigencia", date_format(unix_timestamp($"fecha_novedad", "yyyyMMdd").cast("timestamp"), "yyyy-MM-dd"))
+   //joined_changes.show(20)
+   //joined_changes.printSchema()
+   
+   //edit Iniciovigencia for old rows and FinalVigencia
+   val joined_old = joined
+   .select("a.*").withColumn("InicioVigencia", 
+       sqldate(date_format(unix_timestamp($"fecha_creacion", "yyyyMMdd").cast("timestamp"), "yyyy-MM-dd"),
+       date_format(unix_timestamp($"fecha_modificacion", "yyyyMMdd").cast("timestamp"), "yyyy-MM-dd")))
+   .withColumn("FinalVigencia", date_format(unix_timestamp($"fecha_novedad", "yyyyMMdd").cast("timestamp"), "yyyy-MM-dd"))
+   //joined_old.show(20)
+   //joined_old.printSchema()
+   
+   val all_joined = joined_changes.unionAll(joined_old)
+   //all_joined.show(20)
+   
+   val das_union = das_df.except(all_joined).unionAll(all_joined).unionAll(new_das)
+   das_union.show(20) 
+   
+   sc.stop()
+  }
+  
+  def md5sum(text: String) : String = {
+        val digest = MessageDigest.getInstance("MD5")
+        return digest.digest(text.getBytes).map("%02x".format(_)).mkString
+    }
+  
+  def getDate(fecha_creacion: String, fecha_modificacion : String) : String = {
+        val cal = Calendar.getInstance()
+        val sdf = new SimpleDateFormat("yyyy-MM-dd")
+        if(fecha_creacion == null ){
+          val d1c = sdf.parse(fecha_modificacion)
+          cal.setTime(d1c);
+       }
+       else{
+         cal.setTime(sdf.parse(fecha_creacion))
+        }
+   
+        return sdf.format(cal.getTime())
+    }
+ 
+  
+  case class DAS ( val SEVERIDAD_COBOL:Int,val IND_ELIMINADO: String,val CHECKSUM :String,val fecha_novedad:String,
+      val COD_PAIS_DATO:String, val COD_FUENTE_DATO:Int, 
+                    val TIPO_ID :Int,
+                    val NUM_ID : String,
+                    val NACIONALIDAD : String,
+                    val NOMBRE : String,val fecha_creacion : String,val fecha_modificacion : String,
+                    val ind_modificacion : String, val ind_bloqueo : String,
+                    val InicioVigencia:Option[String], val FinalVigencia:Option[String],
+                    val hash_Key:String, val hashKdt:String, 
+                    val hash_Row: String,
+                    val hash_All: String) extends java.io.Serializable {
+       /* override def toString() : String = {
+            return TIPO_ID.toString + "," + NUM_ID + "," + NACIONALIDAD.toString + "," +
+                   NOMBRE + ","+
+                   InicioVigencia + "," + FinalVigencia  // + "," +
+                // hashKey + "," + hashKdt + "," + hashRow + "," + hashAll
+        }*/
+    }
+  
+}
+
+
