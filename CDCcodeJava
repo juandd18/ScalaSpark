@@ -1,0 +1,189 @@
+package com.juandavid.codigo;
+
+import com.juandavid.codigo.Das;
+
+import org.apache.spark.api.java.JavaPairRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.api.java.function.Function;
+import org.apache.spark.api.java.function.PairFunction;
+
+import java.io.Serializable;
+import java.math.BigInteger;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Vector;
+import java.util.Calendar;
+import java.util.Date;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaRDD;
+
+import org.apache.spark.sql.DataFrame;
+import org.apache.spark.sql.SQLContext;
+import org.apache.spark.sql.Column;
+
+
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.api.java.UDF1;
+import org.apache.spark.sql.api.java.UDF2;
+import org.apache.spark.sql.types.DataTypes;
+import static org.apache.spark.sql.functions.callUDF;
+
+import scala.Tuple2;
+
+public class CDCcode {
+
+public static void main(String[] args) {
+	    
+		SparkConf sparkConf = new SparkConf();
+		 
+		sparkConf.setAppName("Spark cdc");
+		sparkConf.setMaster("local[*]");
+ 
+		JavaSparkContext sc = new JavaSparkContext(sparkConf);
+		SQLContext sqlContext = new SQLContext(sc);
+		
+		// //dataFrame.read(//file-dir).format("com.databricks.spark.csv").option("delimiter","~").save("apache-logs");
+		JavaRDD<String> das_file = sc.textFile("C:\\Users\\daaguila\\Documents\\datos\\Maestros_completos\\Das\\*");
+		JavaRDD<String> das_file_updated = sc.textFile("C:\\Users\\daaguila\\Documents\\datos\\Maestros_completos\\muestra-updatedDas.txt");
+		
+		Function<String, Das> schemaRead = new Function<String, Das>() {
+		    public Das call(String line) throws Exception {
+			      String[] parts = line.split(";");
+
+			      Das das = new Das();
+			      das.setSeveridad_Cobol(Integer.parseInt(parts[0].trim()));
+			      das.setIND_ELIMINADO(parts[1]);
+			      das.setCHECKSUM(parts[2]);
+			      das.setFecha_novedad(parts[3]);
+			      das.setCod_pais_dato(parts[4]);
+			      das.setCod_fuente_dato(Integer.parseInt(parts[5].trim()));
+			      das.setTipo_id(Integer.parseInt(parts[6].trim()));
+			      das.setNum_id(parts[7].trim());
+			      das.setNacionalidad(parts[8].trim());
+			      das.setNombre(parts[9]);
+			      das.setFecha_creacion(parts[10].trim());
+			      das.setFecha_modificacion(parts[11].trim());
+			      das.setInd_modificacion(parts[12].trim());
+			      das.setInd_bloqueo("");
+			      das.setInicioVigencia("");
+			      das.setFinalVigencia("");
+			      String hash_key = new StringBuilder(das.getTipo_id()).append(das.getNum_id()).toString();
+			      das.setHash_Key(md5sum(hash_key));
+			      String hash_all = new StringBuilder(das.getTipo_id()).append(das.getNum_id())
+			    		  .append(das.getNacionalidad()).append(das.getNombre())
+			    		  .append(das.getFecha_creacion()).append(das.getFecha_modificacion())
+			    		  .append(das.getInd_modificacion()).append(das.getInd_bloqueo()).toString();
+			      das.setHash_All(md5sum(hash_all));
+			      //revisar si quitar este campo
+			      das.setHash_Row(md5sum(hash_all));
+			      
+			      return das;
+			    }
+			  };
+		
+	    PairFunction<Das, String, Das> keyData =
+		    		  new PairFunction<Das,String, Das>() {    
+
+					public Tuple2<String, Das> call(Das das) throws Exception {
+						// TODO Auto-generated method stub
+						return new Tuple2<String, Das>(das.getHash_Key(), das);
+					}
+		    	};
+		   
+		//DataFrame das_df = sqlContext.createDataFrame(das_file.map(schemaRead), Das.class);
+		//das_df.show();
+		    	
+		JavaPairRDD<String, Das> das_file_rdd = das_file.map(schemaRead).mapToPair(keyData);
+		JavaPairRDD<String, Das> das_updated_rdd = das_file_updated.map(schemaRead).mapToPair(keyData);
+		
+	       
+	    // new rows
+	    JavaRDD<Das>  new_das_rdd = das_updated_rdd.subtractByKey(das_file_rdd).map(
+	    		new Function<Tuple2<String, Das>,Das>() {
+	    		    public Das call(Tuple2<String, Das> row) throws Exception {
+						// TODO Auto-generated method stub
+						return row._2();
+					}
+	    		  }
+	    		); 
+	    
+	    DataFrame new_das = sqlContext.createDataFrame(new_das_rdd, Das.class);
+	    DataFrame das_df = sqlContext.createDataFrame(das_file.map(schemaRead), Das.class);
+	    DataFrame das_updated_df = sqlContext.createDataFrame(das_file_updated.map(schemaRead), Das.class);   
+	    //das_updated_df.show(30); 
+	    
+	    //hash_Key equals but select changes
+	    DataFrame joined = das_df.as("a").join(das_updated_df.as("b"),das_df.col("hash_Key").equalTo(das_updated_df.col("hash_Key")))
+	    .where( das_df.col("hash_All").notEqual(das_updated_df.col("hash_All")));
+	    //joined.show(20);
+	    
+	    //edit InicioVigencia for edit rows
+	    DataFrame joined_changes = joined
+	    .select( "b.*").withColumn("inicioVigencia",joined.col("b.fecha_novedad"));
+	    //joined_changes.show(20);
+	    
+	    UDF2 getDate = new UDF2<String,String,String>() {
+			public String call(String fecha_creacion, String fecha_modificacion) throws Exception {
+				// TODO Auto-generated method stub
+				// TODO Auto-generated method stub
+				Calendar cal = Calendar.getInstance();
+		        SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd");
+		        
+		        if(fecha_creacion.isEmpty() ){
+		        	Date d1c = sdf.parse(fecha_modificacion);
+		          cal.setTime(d1c);
+		       }
+		       else{
+		         cal.setTime(sdf.parse(fecha_creacion));
+		        }
+		   
+		        return sdf.format(cal.getTime()).toString();
+			}
+	    	};
+	    	
+	    sqlContext.udf().register("sqldate", getDate, DataTypes.StringType);
+	    
+	    //edit Iniciovigencia for old rows and FinalVigencia
+	    DataFrame joined_old = joined
+	    .select("a.*").withColumn("inicioVigencia", callUDF("sqldate",joined.col("a.fecha_creacion"),joined.col("a.fecha_modificacion")))
+	    .withColumn("finalVigencia",joined.col("a.fecha_novedad"));
+	    //joined_old.show(20);
+	    //joined_old.printSchema();
+	    
+	    DataFrame all_joined = joined_changes.unionAll(joined_old);
+	    //all_joined.show(20)
+	    		   
+	    DataFrame das_union = das_df.except(all_joined).unionAll(all_joined).unionAll(new_das);
+	    das_union.show(20); 
+	    
+		
+	    		
+		sc.close();
+	   
+	}
+
+public static String md5sum(String text)  {
+        MessageDigest digest = null;
+        String output = null;
+        
+		try {
+			digest = MessageDigest.getInstance("MD5");
+			byte[] md5sum = digest.digest(text.getBytes());
+			output = String.format("%032X", new BigInteger(1, md5sum));
+			
+		} catch (NoSuchAlgorithmException e) {
+			// TODO Auto-generated catch block
+			
+		}
+        
+        return output;
+    }
+	
+
+
+}
