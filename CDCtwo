@@ -35,8 +35,8 @@ object CdcTwo {
     //
     //val das_file = sc.textFile("hdfs:////Colombia/landing/sanatas/20160717/Das/*")
     
-    val file = "C:\\Users\\daaguila\\Documents\\datos\\Maestros_completos\\muestra-Das.txt"
-    val file_updated = "C:\\Users\\daaguila\\Documents\\datos\\Maestros_completos\\DAS\\*"
+    val file = "C:\\Users\\daaguila\\Documents\\datos\\Maestros_completos\\Das\\*"
+    val file_updated = "C:\\Users\\daaguila\\Documents\\datos\\Maestros_completos\\muestra-updatedDas.txt"
    
     val dasSchema = StructType(Array(
     StructField("severidad_cobol", IntegerType, true),
@@ -51,10 +51,10 @@ object CdcTwo {
     StructField("nombre", StringType, true),
     StructField("fecha_creacion", StringType, true),
     StructField("fecha_modificacion", StringType, true),
-    StructField("InicioVigencia", StringType, true),
-    StructField("FinalVigencia", StringType, true),
     StructField("ind_modificacion", StringType, true),
-    StructField("ind_bloqueo", StringType, true)
+    StructField("ind_bloqueo", StringType, true),
+    StructField("InicioVigencia", StringType, true),
+    StructField("FinalVigencia", StringType, true)
     ))
     
      val dasSchemaDos = StructType(Array(
@@ -79,12 +79,7 @@ object CdcTwo {
     StructField("hash_all", StringType, true)
     ))
    
-  
-
-   //current_timestamp()
-   // SQL statements can be run by using the sql methods provided by sqlContext.
-   //val results = sqlContext.sql("SELECT * FROM das")
-    
+      
    val das_ini_df = sqlContext.read
     .format("com.databricks.spark.csv")
     .option("header", "false") // Use first line of all files as header
@@ -98,18 +93,18 @@ object CdcTwo {
     val md5fun = md5sum(_)
     val sqlmd5 = udf(md5fun)
     
-    val md5funall = md5sumAll(_,_,_,_,_,_,_,_)
+    val md5funall = md5sumAll(_)
     val sqlmd5All = udf(md5funall)
     
     val datefun = getDate(_,_)
     val sqldate = udf(datefun)
     
-    
+   val cols_all = array($"tipo_id",$"num_id",$"nacionalidad",$"nombre",
+       $"fecha_creacion",$"fecha_modificacion",$"ind_modificacion",$"ind_bloqueo")
    
    val das_file_df = das_ini_df.withColumn("hash_key",sqlmd5($"tipo_id"+$"num_id"))
    .withColumn("hash_kdt", sqlmd5($"tipo_id"+$"num_id"))
-   .withColumn("hash_all", sqlmd5All($"tipo_id",$"num_id",$"nacionalidad",$"nombre",
-       $"fecha_creacion",$"fecha_modificacion",$"ind_modificacion",$"ind_bloqueo"))
+   .withColumn("hash_all", sqlmd5All(cols_all))
    //das_df.printSchema()
    //das_df.show(20)
   
@@ -118,17 +113,19 @@ object CdcTwo {
     .option("delimiter",";").option("charset","ISO-8859-1")
     .schema(dasSchema)
     .load(file_updated)
+    
    val das_update_df = das_upd_df.withColumn("hash_key",sqlmd5($"tipo_id"+$"num_id"))
    .withColumn("hash_kdt", sqlmd5($"tipo_id"+$"num_id"))
-   .withColumn("hash_all", sqlmd5All($"tipo_id",$"num_id",$"nacionalidad",$"nombre",
-       $"fecha_creacion",$"fecha_modificacion",$"ind_modificacion",$"ind_bloqueo"))
+   .withColumn("hash_all", sqlmd5All(cols_all))
     //das_updated_df.printSchema()
     
-    val das_file_rdd = das_file_df.rdd.map(entry => (entry.getString(16), entry))
-    val das_updated_rdd = das_update_df.rdd.map(entry => (entry.getString(16), entry))
+    val das_file_rdd = das_file_df.rdd.map(entry => (entry.getString(17), entry))
+    val das_updated_rdd = das_update_df.rdd.map(entry => (entry.getString(17), entry))
     
     val new_das_temp = das_updated_rdd.subtractByKey(das_file_rdd).map(x => x._2) 
-    val new_das = sqlContext.createDataFrame(new_das_temp, dasSchemaDos)
+    val new_das_temp2 = sqlContext.createDataFrame(new_das_temp, dasSchemaDos)
+    val new_das = new_das_temp2.withColumn("InicioVigencia",date_format(unix_timestamp($"fecha_novedad", "yyyyMMdd").cast("timestamp"), "yyyy-MM-dd"))
+    //new_das.show();
     
      //hash_Key equals but select changes
    val joined = das_file_df.as("a").join(das_update_df.as("b"),$"a.hash_key" === $"b.hash_key" ,"inner")
@@ -166,10 +163,10 @@ object CdcTwo {
         return digest.digest(text.getBytes).map("%02x".format(_)).mkString
     }
   
-  def md5sumAll(text: String,text2:String,text3:String,text4:String,text5:String,text6:String,text7:String,text8:String) : String = {
+  def md5sumAll(strings: Seq[Any]) : String = {
         val digest = MessageDigest.getInstance("MD5")
-        val textALL = text + text2 + text3 + text4 + text5 + text6 + text7 + text8
-        return digest.digest(textALL.getBytes).map("%02x".format(_)).mkString
+        val texto = strings.filter(_ != null).mkString("")
+        return digest.digest(texto.getBytes).map("%02x".format(_)).mkString
     }
   
    def getDate(fecha_creacion: String, fecha_modificacion : String) : String = {
